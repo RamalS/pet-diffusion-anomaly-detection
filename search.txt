@@ -1,0 +1,2 @@
+- normalne slike
+Research group = CN; Sex = Both; Modality = PET; Frames = 1.0; Slice Thickness = 2.0; Radioisotope = F-18; Image count = 500
