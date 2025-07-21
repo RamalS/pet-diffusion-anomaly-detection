@@ -1,0 +1,1 @@
+python -m models.cancer_diffusion train --data_root="F:\PET_FULL_BODY_DATASET\nifti\FDG-PET-CT-Lesions" --mask_root="F:\Obrada slike\pet-scan-diffusion-anomaly-detection\gradcam_out" --csv_path="./fb_metadata.csv" --epoch=15 

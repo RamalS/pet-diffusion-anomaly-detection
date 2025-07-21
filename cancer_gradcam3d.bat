@@ -1,0 +1,1 @@
+python -m postprocesning.cancer_gradcam3d --nii_file "F:\PET_FULL_BODY_DATASET\nifti\FDG-PET-CT-Lesions\PETCT_0117d7f11f\09-13-2001-NA-PET-CT Ganzkoerper  primaer mit KM-68547\PET_segmented.nii.gz" --checkpoint "F:\Obrada slike\pet-scan-diffusion-anomaly-detection\model_results\lung_cancer_20250719_220641\best_epoch27_acc0.720.pth" --output_dir ".\results\gradcam"

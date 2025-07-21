@@ -15,9 +15,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class DicomPETDataset(Dataset):
-    def __init__(
-        self, patient_dirs, transform=None, target_slices=81, target_size=(128, 128)
-    ):
+    def __init__(self, patient_dirs, transform=None, target_slices=81, target_size=(128, 128)):
         self.patient_dirs = patient_dirs
         self.transform = transform
         self.target_slices = target_slices
@@ -28,11 +26,7 @@ class DicomPETDataset(Dataset):
 
     def __getitem__(self, idx):
         folder = self.patient_dirs[idx]
-        files = [
-            os.path.join(folder, f)
-            for f in os.listdir(folder)
-            if f.lower().endswith(".dcm")
-        ]
+        files = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".dcm")]
         slices = [pydicom.dcmread(f) for f in files]
         slices.sort(key=lambda s: float(getattr(s, "SliceLocation", s.InstanceNumber)))
         volume = np.stack([s.pixel_array for s in slices], axis=0).astype(np.float32)
@@ -42,12 +36,7 @@ class DicomPETDataset(Dataset):
         volume = (volume - volume.mean()) / (volume.std() + 1e-6)
 
         vol_t = torch.from_numpy(volume).unsqueeze(0).unsqueeze(0)
-        vol_t = F.interpolate(
-            vol_t,
-            size=(self.target_slices, self.target_h, self.target_w),
-            mode="trilinear",
-            align_corners=False,
-        )
+        vol_t = F.interpolate(vol_t, size=(self.target_slices, self.target_h, self.target_w), mode="trilinear", align_corners=False)
         volume = vol_t.squeeze(0).squeeze(0).numpy()
 
         if self.transform:
@@ -63,24 +52,19 @@ class SinusoidalPosEmb(nn.Module):
 
     def forward(self, t):
         half = self.dim // 2
-        emb_scale = torch.exp(
-            torch.arange(half, device=t.device) * -np.log(10000) / (half - 1)
-        )
+        emb_scale = torch.exp(torch.arange(half, device=t.device) * -np.log(10000) / (half - 1))
         emb = t[:, None] * emb_scale[None, :]
         return torch.cat([emb.sin(), emb.cos()], dim=-1)
 
 
 class UNet3D(nn.Module):
-    def __init__(
-        self, in_channels=1, base_channels=32, channel_mults=(1, 2, 4), time_emb_dim=128
-    ):
+    def __init__(self, in_channels=1, base_channels=32, channel_mults=(1, 2, 4), time_emb_dim=128):
         super().__init__()
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(time_emb_dim),
             nn.Linear(time_emb_dim, time_emb_dim),
             nn.ReLU(),
         )
-        # Down
         self.downs = nn.ModuleList()
         self.time_proj_down = nn.ModuleList()
         ch = in_channels
@@ -97,7 +81,6 @@ class UNet3D(nn.Module):
             self.downs.append(block)
             self.time_proj_down.append(nn.Linear(time_emb_dim, out_ch))
             ch = out_ch
-        # Middle
         self.mid = nn.Sequential(
             nn.Conv3d(ch, ch, 3, padding=1),
             nn.GroupNorm(8, ch),
@@ -107,7 +90,6 @@ class UNet3D(nn.Module):
             nn.ReLU(),
         )
         self.time_proj_mid = nn.Linear(time_emb_dim, ch)
-        # Up
         self.ups = nn.ModuleList()
         self.time_proj_up = nn.ModuleList()
         skip_channels = list(reversed([base_channels * m for m in channel_mults]))
@@ -132,23 +114,18 @@ class UNet3D(nn.Module):
         t_emb = self.time_mlp(t)
         features = []
         out = x
-        # Down path
         for block, tp in zip(self.downs, self.time_proj_down):
             out = block[0](out)
             out = out + tp(t_emb)[:, :, None, None, None]
             out = block[1:](out)
             features.append(out)
             out = F.avg_pool3d(out, 2)
-        # Mid
         out = self.mid[0](out)
         out = out + self.time_proj_mid(t_emb)[:, :, None, None, None]
         out = self.mid[1:](out)
-        # Up path
         for block, tp in zip(self.ups, self.time_proj_up):
             skip = features.pop()
-            out = F.interpolate(
-                out, size=skip.shape[2:], mode="trilinear", align_corners=False
-            )
+            out = F.interpolate(out, size=skip.shape[2:], mode="trilinear", align_corners=False)
             out = torch.cat([out, skip], dim=1)
             out = block[0](out)
             out = out + tp(t_emb)[:, :, None, None, None]
@@ -161,7 +138,6 @@ class Diffusion(nn.Module):
         super().__init__()
         self.model = model
         self.timesteps = timesteps
-        # Beta schedule
         self.register_buffer("betas", torch.linspace(beta_start, beta_end, timesteps))
         alphas = 1 - self.betas
         alphas_cum = torch.cumprod(alphas, 0)
@@ -184,17 +160,12 @@ class Diffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample(self, x_t, t):
-        """
-        One reverse diffusion step: x_t -> x_{t-1}
-        """
         b = x_t.size(0)
         tt = torch.full((b,), t, device=x_t.device, dtype=torch.long)
-        # predict noise
         noise_pred = self.model(x_t, tt.float() / self.timesteps)
         beta_t = self.betas[t]
         alpha_t = 1 - beta_t
         alpha_cum = self.alphas_cumprod[t]
-        # mean of p(x_{t-1}|x_t)
         coef1 = 1 / torch.sqrt(alpha_t)
         coef2 = beta_t / torch.sqrt(1 - alpha_cum)
         mean = coef1 * (x_t - coef2 * noise_pred)
@@ -207,26 +178,17 @@ class Diffusion(nn.Module):
 
     @torch.no_grad()
     def reconstruct(self, x0, steps=100):
-        """
-        Reconstruct from clean x0 by adding noise to step t and then iteratively denoising.
-        """
-        # add noise to get x_t
         t_idx = steps - 1
         b = x0.size(0)
         tt = torch.full((b,), t_idx, device=x0.device, dtype=torch.long)
         x, _ = self.q_sample(x0, tt)
         initial_noised_x = x.clone()
-
-        # iterative denoise
         for ti in reversed(range(steps)):
             x = self.p_sample(x, ti)
         return x, initial_noised_x
 
     @torch.no_grad()
     def sample(self, shape, steps=None):
-        """
-        Sample from scratch: start from pure noise.
-        """
         if steps is None:
             steps = self.timesteps
         x = torch.randn(shape, device=self.betas.device)
@@ -252,8 +214,6 @@ def train(root, unet, diffusion, device, epochs=10, batch_size=2, lr=1e-4):
             total_loss += loss.item()
         avg = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{epochs} - Loss: {avg:.4f}")
-
-    # Save model
     torch.save(
         {
             "unet_state_dict": unet.state_dict(),
@@ -281,55 +241,44 @@ if __name__ == "__main__":
         if not args.example_folder:
             raise ValueError("Provide --example_folder for example mode")
         example_folder = args.example_folder
-
-        # load model
         checkpoint = torch.load("diffusion_model.pth", map_location=device)
         unet.load_state_dict(checkpoint["unet_state_dict"])
         diffusion.load_state_dict(checkpoint["diffusion_state_dict"])
-
-        # load data
         ds = DicomPETDataset([example_folder])
         loader = DataLoader(ds, batch_size=1)
         vol = next(iter(loader)).to(device)
-
-        # reconstruct
         recon, initial_noised = diffusion.reconstruct(vol, steps=500)
-        # or sample from noise:
-        # recon = diffusion.sample(vol.shape, steps=100)
         recon_np = recon.squeeze().cpu().numpy()
         np.save("recon.npy", recon_np)
         initial_noised_np = initial_noised.squeeze().cpu().numpy()
-
-        # visualize
         D = recon_np.shape[0]
         idxs = np.linspace(0, D - 1, args.n_slices, dtype=int)
-        fig, axes = plt.subplots(4, args.n_slices, figsize=(4 * args.n_slices, 9))
-
+        fig, axes = plt.subplots(5, args.n_slices, figsize=(4 * args.n_slices, 9))
         vol_np = vol.squeeze().cpu().numpy()
         diff_np = np.abs(vol_np - recon_np)
+        mean_diff = diff_np.mean()
+        std_diff = diff_np.std()
+        z_map_np = (diff_np - mean_diff) / std_diff
         print("Diff stats - min:", diff_np.min(), "max:", diff_np.max(), "mean:", diff_np.mean())
-
         threshold = 1
         anomaly_mask = (diff_np > threshold).astype(np.float32)
-
         for i, idx in enumerate(idxs):
             axes[0, i].imshow(vol_np[idx], cmap="gray")
             axes[0, i].axis("off")
             axes[0, i].set_title(f"Original {idx}")
-
-
             axes[1, i].imshow(initial_noised_np[idx], cmap="gray")
             axes[1, i].axis("off")
             axes[1, i].set_title(f"Noised {idx}")
-
             axes[2, i].imshow(recon_np[idx], cmap="gray")
             axes[2, i].axis("off")
             axes[2, i].set_title(f"Reconstructed {idx}")
-
             axes[3, i].imshow(vol_np[idx], cmap="gray")
             axes[3, i].imshow(anomaly_mask[idx], cmap="Reds", alpha=0.5, interpolation="none")
             axes[3, i].axis("off")
             axes[3, i].set_title(f"Anomalies {idx}")
-
+            im = axes[4, i].imshow(z_map_np[idx], cmap="viridis")
+            axes[4, i].axis("off")
+            axes[4, i].set_title(f"Z-map {idx}")
+            fig.colorbar(im, ax=axes[4, i], fraction=0.35, pad=0)
         plt.tight_layout()
         plt.show()
